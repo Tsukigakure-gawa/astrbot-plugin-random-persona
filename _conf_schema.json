@@ -1,9 +1,15 @@
 {
+  "mcp_url": {
+    "type": "text",
+    "label": "MCP 服务地址",
+    "default": "http://127.0.0.1:4568",
+    "description": "random-persona MCP 服务器的地址"
+  },
   "silence_mode": {
     "type": "select",
     "label": "沉默模式",
     "options": ["短回应", "完全不回"],
     "default": "短回应",
-    "description": "触发沉默权时：短回应发送极简回复，完全不回则不发送任何消息"
+    "description": "触发沉默权时的行为"
   }
 }
