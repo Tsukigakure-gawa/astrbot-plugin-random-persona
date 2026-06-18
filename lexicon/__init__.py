@@ -36,26 +36,28 @@ class EmotionLexicon:
         return len(self.words)
 
     def _load(self) -> None:
-        path = os.path.join(self._data_dir, "curated_lexicon.json")
-        if not os.path.exists(path):
-            # fallback: minimal built-in
-            self._load_builtin()
-            return
-
-        try:
-            with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except Exception:
-            self._load_builtin()
-            return
-
-        self.words = data.get("words", [])
-        self._index()
-        self._loaded = True
-
-    def _load_builtin(self) -> None:
-        """Minimal curated lexicon (~600 entries)."""
+        """Load curated_lexicon.json if available, merging with built-in seed."""
+        # Always start with built-in seed (hand-curated, high quality)
         self.words = list(_BUILTIN_LEXICON)
+        builtin_words = {w["word"] for w in self.words}
+
+        path = os.path.join(self._data_dir, "curated_lexicon.json")
+        if os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    data = json.load(fh)
+                dutir_words = data.get("words", [])
+                # Merge: add DUTIR words not already in built-in seed
+                added = 0
+                for dw in dutir_words:
+                    if dw["word"] not in builtin_words:
+                        self.words.append(dw)
+                        added += 1
+                if added:
+                    print(f"[Lexicon] Merged {added} DUTIR words ({len(self.words)} total)")
+            except Exception:
+                pass  # fall through to built-in only
+
         self._index()
         self._loaded = True
 
