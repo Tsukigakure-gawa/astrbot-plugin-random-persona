@@ -1,0 +1,9 @@
+{
+  "silence_mode": {
+    "type": "select",
+    "label": "沉默模式",
+    "options": ["短回应", "完全不回"],
+    "default": "短回应",
+    "description": "触发沉默权时的行为：短回应发送极简回复，完全不回则不发送任何消息"
+  }
+}

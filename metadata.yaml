@@ -1,0 +1,6 @@
+name: astrbot_plugin_random_persona
+display_name: 随机人格
+desc: 随机化AI情感基调和表达方式，避免永远积极/机械找话题。五种表达方式+情感维度+沉默权，让回复更有人味。
+version: v1.0.0
+author: Tsukigakure
+repo: https://github.com/Tsukigakure-gawa/astrbot-plugin-random-persona
