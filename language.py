@@ -1,27 +1,26 @@
 """
-Language profile mapper — translate internal state + speech act into
-quantified linguistic feature parameters, then compile to a compact
-system-prompt behaviour instruction.
+Language profile mapper + lexicon-backed prompt injection.
 
-This replaces the v1 \"回复风格指引\" with 16 concrete parameters
-and a ~35-token injection block.
+v2.1:  Replaces vague "语气温暖" instructions with data-driven word
+       recommendations from the combined emotion lexicon.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
+from .lexicon import EmotionLexicon
 
 # ---- LanguageProfile -----------------------------------------------
 
 @dataclass
 class LanguageProfile:
     # ── lexical ──
-    intensifier_rate: float = 0.3   # adverbs like 非常/超级/太
-    hedge_rate: float = 0.3         # hedges like 可能/也许/有点
-    positive_lexicon: float = 0.5   # bias toward positive words
-    negative_lexicon: float = 0.2   # bias toward negative words
+    intensifier_rate: float = 0.3
+    hedge_rate: float = 0.3
+    positive_lexicon: float = 0.5
+    negative_lexicon: float = 0.2
     emoji_rate: float = 0.2
     filler_rate: float = 0.15
     exclamation_rate: float = 0.3
@@ -33,9 +32,9 @@ class LanguageProfile:
     question_rate: float = 0.2
 
     # ── discourse ──
-    response_length: str = "normal"        # minimal | brief | normal | elaborate
-    politeness_strategy: str = "positive"  # bald | positive | negative | off_record
-    turn_initiative: str = "neutral"       # passive | neutral | active
+    response_length: str = "normal"
+    politeness_strategy: str = "positive"
+    turn_initiative: str = "neutral"
     self_disclosure_depth: float = 0.0
     humor_license: bool = False
 
@@ -43,14 +42,11 @@ class LanguageProfile:
 # ---- mapper --------------------------------------------------------
 
 def map_to_profile(
-    # internal state
-    mood: Any,                        # Mood
-    trait: Any,                       # Trait
-    emotion: Any | None,              # Emotion | None
-    # decision outputs
-    speech_act: str,                  # SpeechAct value
+    mood: Any,
+    trait: Any,
+    emotion: Any | None = None,
+    speech_act: str = "brief_answer",
     regulation: str | None = None,
-    # context
     relationship_stage: str = "stranger",
 ) -> LanguageProfile:
     """Convert internal state → quantified linguistic parameters."""
@@ -74,7 +70,7 @@ def map_to_profile(
     p.ellipsis_rate = round(0.05 + (1.0 - trait.conscientiousness) * 0.30, 2)
 
     # ── from Emotion ──
-    if emotion is not None and emotion.is_active:
+    if emotion is not None and getattr(emotion, 'is_active', False):
         p.positive_lexicon = round(p.positive_lexicon + emotion.v * emotion.intensity * 0.30, 2)
         p.negative_lexicon = round(p.negative_lexicon + (1.0 - emotion.v) * emotion.intensity * 0.30, 2)
         p.intensifier_rate = round(p.intensifier_rate + emotion.a * emotion.intensity * 0.30, 2)
@@ -137,8 +133,6 @@ def map_to_profile(
     return p
 
 
-# ---- speech-act → profile modifiers --------------------------------
-
 def _apply_speech_act_mods(p: LanguageProfile, act: str) -> None:
     mods: dict[str, Any] = {
         "minimal_ack":        {"response_length": "minimal", "avg_sentence_len": 8,
@@ -173,31 +167,90 @@ def _apply_speech_act_mods(p: LanguageProfile, act: str) -> None:
         "seek_clarification": {"question_rate": 0.60, "hedge_rate": 0.30,
                                "turn_initiative": "active", "response_length": "brief"},
     }
-
     overrides = mods.get(act, {})
     for k, v in overrides.items():
         if hasattr(p, k):
             setattr(p, k, v)
 
 
-# ---- profile → prompt injection ------------------------------------
+# ---- lexicon-backed prompt injection --------------------------------
+
+class LexiconPromptBuilder:
+    """Builds prompt injection using emotion lexicon for word recommendations."""
+
+    def __init__(self, data_dir: str) -> None:
+        self.lexicon = EmotionLexicon(data_dir)
+
+    def build(
+        self,
+        mood: Any,
+        trait: Any = None,
+        emotion: Any | None = None,
+        speech_act: str = "brief_answer",
+        regulation: str | None = None,
+        relationship_stage: str = "stranger",
+        silence_muted: bool = False,
+    ) -> str:
+        """Build a compact behaviour prompt with lexicon-backed word hints."""
+
+        # 1. Get full profile
+        profile = map_to_profile(
+            mood=mood, trait=trait, emotion=emotion,
+            speech_act=speech_act, regulation=regulation,
+            relationship_stage=relationship_stage,
+        )
+        if silence_muted:
+            profile.response_length = "minimal"
+            profile.turn_initiative = "passive"
+
+        # 2. Lexicon query — preferred words
+        preferred = self.lexicon.query_pad_weighted(
+            mood.valence, mood.arousal, mood.dominance,
+            top_k=12,
+        )
+
+        # 3. Lexicon query — words to avoid
+        avoid = self.lexicon.query_avoid(
+            mood.valence, mood.arousal, mood.dominance,
+            top_k=6,
+        )
+
+        # 4. If active emotion, also pull category words
+        if emotion is not None and getattr(emotion, 'is_active', False):
+            emotion_cat = getattr(emotion, 'primary', None)
+            if emotion_cat:
+                cat_words = self.lexicon.query_category(emotion_cat, top_k=6)
+                # merge with preferred, dedupe
+                preferred = preferred[:8] + [w for w in cat_words if w not in preferred]
+                preferred = preferred[:14]
+
+        # 5. Build prompt block
+        return _render_prompt(profile=profile, preferred=preferred, avoid=avoid)
+
 
 def profile_to_prompt(p: LanguageProfile) -> str:
-    """Compile a LanguageProfile into a compact behaviour instruction block.
+    """Legacy API: render profile without lexicon."""
+    return _render_prompt(p, preferred=[], avoid=[])
 
-    Target: ≤ 50 tokens (~150 chars)."""
+
+def _render_prompt(
+    profile: LanguageProfile,
+    preferred: list[str],
+    avoid: list[str],
+) -> str:
+    """Render behaviour instructions + word hints into ~50-token block."""
 
     parts: list[str] = []
 
     # tone
     tone_parts: list[str] = []
-    if p.positive_lexicon > 0.65:
+    if profile.positive_lexicon > 0.65:
         tone_parts.append("温暖")
-    elif p.negative_lexicon > 0.40:
+    elif profile.negative_lexicon > 0.40:
         tone_parts.append("克制")
-    if p.intensifier_rate > 0.55:
+    if profile.intensifier_rate > 0.55:
         tone_parts.append("有力")
-    if p.hedge_rate > 0.50:
+    if profile.hedge_rate > 0.50:
         tone_parts.append("委婉")
     if tone_parts:
         parts.append("语气: " + "、".join(tone_parts))
@@ -206,39 +259,47 @@ def profile_to_prompt(p: LanguageProfile) -> str:
 
     # length
     len_map = {"minimal": "极短，一句话", "brief": "简洁", "normal": "适中", "elaborate": "偏长，可以展开"}
-    parts.append("长度: " + len_map.get(p.response_length, "适中"))
+    parts.append("长度: " + len_map.get(profile.response_length, "适中"))
 
-    # style hints
+    # style
     style: list[str] = []
-    if p.emoji_rate > 0.35:
+    if profile.emoji_rate > 0.35:
         style.append("适当 emoji")
-    if p.humor_license:
+    if profile.humor_license:
         style.append("可以轻松幽默")
-    if p.self_disclosure_depth > 0.3:
-        style.append("可以自然带出个人感受")
-    if p.complexity < 0.35:
+    if profile.self_disclosure_depth > 0.3:
+        style.append("可以带出个人感受")
+    if profile.complexity < 0.35:
         style.append("短句为主")
-    if p.ellipsis_rate > 0.25:
-        style.append("可以用省略表达")
+    if profile.ellipsis_rate > 0.25:
+        style.append("可以用省略")
     if style:
         parts.append("风格: " + "、".join(style))
 
     # turn
-    if p.turn_initiative == "active":
+    if profile.turn_initiative == "active":
         parts.append("主动: 可以延伸或追问")
-    elif p.turn_initiative == "passive":
-        parts.append("克制: 回应即可，不追问")
+    elif profile.turn_initiative == "passive":
+        parts.append("克制: 回应即可")
 
-    # constraints
+    # constraint
     constraints: list[str] = []
-    if p.exclamation_rate < 0.15:
+    if profile.exclamation_rate < 0.15:
         constraints.append("少用感叹号")
-    if p.intensifier_rate < 0.20:
+    if profile.intensifier_rate < 0.20:
         constraints.append("不用夸张修辞")
-    if p.negative_lexicon < 0.15:
-        constraints.append("避免消极")
 
-    block = "[PERSONA]\n" + "\n".join(parts)
+    # ── lexicon word hints ──
+    word_hints: list[str] = []
+    if preferred:
+        word_hints.append("倾向用词: " + "、".join(preferred[:8]))
+    if avoid:
+        word_hints.append("避免用词: " + "、".join(avoid[:5]))
+
+    block = "[PERSONA]\n"
+    block += "\n".join(parts)
+    if word_hints:
+        block += "\n" + "\n".join(word_hints)
     if constraints:
         block += "\n" + "、".join(constraints)
     block += "\n[/PERSONA]"
