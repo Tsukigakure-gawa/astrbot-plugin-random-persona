@@ -1,6 +1,6 @@
 name: astrbot_plugin_random_persona
-display_name: 随机人格
-desc: 随机化AI情感基调和表达方式，避免永远积极/机械找话题。五种表达方式+情感维度+沉默权，让回复更有人味。
-version: v1.0.0
+display_name: 随机人格 v2
+desc: 六层认知-情感-社交架构。OCEAN人格→心境OU漂移→Appraisal情绪触发→SpeechAct选择→语言特征映射→关系调节
+version: v2.0.0
 author: Tsukigakure
 repo: https://github.com/Tsukigakure-gawa/astrbot-plugin-random-persona
